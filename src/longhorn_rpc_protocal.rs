@@ -115,7 +115,6 @@ pub fn read_header(
     stream: &mut UnixStream,
     msg: &mut MessageHeader,
     header: &mut [u8],
-    header_size: usize,
 ) -> io::Result<usize> {
     let mut offset = 0;
 
