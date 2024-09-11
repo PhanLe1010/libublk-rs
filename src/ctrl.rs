@@ -224,6 +224,8 @@ impl Default for UblkCtrlBuilder<'_> {
 }
 
 impl UblkCtrlBuilder<'_> {
+    // create the UblkCtrl device
+    
     /// create one pair of ublk devices, the 1st one is control device(`UblkCtrl`),
     /// and the 2nd one is data device(`UblkDev`)
     pub fn build(self) -> Result<UblkCtrl, UblkError> {
