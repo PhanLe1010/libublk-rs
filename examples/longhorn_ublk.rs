@@ -8,6 +8,7 @@ use libublk::helpers::IoBuf;
 use libublk::io::{UblkDev, UblkIOCtx, UblkQueue};
 use libublk::uring_async::ublk_wait_and_handle_ios;
 use libublk::{ctrl::UblkCtrl, sys, UblkError, UblkFlags, UblkIORes};
+use nix::NixPath;
 use serde::Serialize;
 use std::borrow::Borrow;
 use std::os::fd::AsFd;
@@ -18,11 +19,12 @@ use std::rc::Rc;
 use async_std::sync::{Arc, Mutex};
 // use std::io::prelude::*;
 // use std::net::TcpStream;
+use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::cell::RefCell;
 
 use libublk::longhorn_rpc_protocal;
+use md5::{Digest, Md5};
 use std::fs::File;
 
 #[derive(Debug, Serialize)]
@@ -122,7 +124,7 @@ fn lo_init_tgt(dev: &mut UblkDev, lo: &LoopTgt) -> Result<(), UblkError> {
         },
         ..Default::default()
     };
-    let val = serde_json::json!({"loop": LoJson { back_file_path: lo.back_file_path.clone(), direct_io: 1 } });
+    let val = serde_json::json!({"longhorn_ublk": LoJson { back_file_path: lo.back_file_path.clone(), direct_io: 1 } });
     dev.set_target_json(val);
 
     Ok(())
@@ -230,26 +232,40 @@ fn q_fn(qid: u16, dev: &UblkDev) {
 
 const SOCKET_PATH: &str = "/var/run/longhorn-testvol-e.sock";
 
+fn compute_md5_checksum(buf: &[u8]) -> String {
+    // Create an Md5 hasher
+    let mut hasher = Md5::new();
+
+    // Write the buffer data into the hasher
+    hasher.update(buf);
+
+    // Finalize the hash and get the result as bytes
+    let result = hasher.finalize();
+
+    // Convert the hash result to a hex string
+    format!("{:x}", result)
+}
+
 fn q_a_fn(qid: u16, dev: &UblkDev, depth: u16) {
     let q_rc = Rc::new(UblkQueue::new(qid as u16, &dev).unwrap());
     let exe = smol::LocalExecutor::new();
     let mut f_vec = Vec::new();
 
-        // // Establish a TCP connection to the server
-        // let mut stream = TcpStream::connect("127.0.0.1:34254").unwrap();
-        // // Wrap the stream in Arc<Mutex<TcpStream>> to share it between async tasks
-        // let shared_stream = Arc::new(Mutex::new(stream));
+    // // Establish a TCP connection to the server
+    // let mut stream = TcpStream::connect("127.0.0.1:34254").unwrap();
+    // // Wrap the stream in Arc<Mutex<TcpStream>> to share it between async tasks
+    // let shared_stream = Arc::new(Mutex::new(stream));
 
     // let stream_arc = Arc::new(Mutex::new(UnixStream::connect(SOCKET_PATH).unwrap()));
 
-    let stream_org = UnixStream::connect(SOCKET_PATH).unwrap();
+    // let stream_org = UnixStream::connect(SOCKET_PATH).unwrap();
 
     for tag in 0..depth {
         let q = q_rc.clone();
         // let stream_clone = Arc::clone(&shared_stream);
         // let stream_clone = Arc::clone(&stream_arc);
 
-        let mut stream = stream_org.try_clone().unwrap();
+        let mut stream = UnixStream::connect(SOCKET_PATH).unwrap();
 
         f_vec.push(exe.spawn(async move {
             // create a new message and push it the longhorn_conn.queue
@@ -274,8 +290,6 @@ fn q_a_fn(qid: u16, dev: &UblkDev, depth: u16) {
             let mut request_header: Vec<u8> = vec![0u8; message_header_size];
             let mut response_header: Vec<u8> = vec![0u8; message_header_size];
 
-
-
             q.register_io_buf(tag, &buf);
             loop {
                 let cmd_res = q.submit_io_cmd(tag, cmd_op, buf_addr, res).await;
@@ -297,11 +311,14 @@ fn q_a_fn(qid: u16, dev: &UblkDev, depth: u16) {
                 let bytes = (iod.nr_sectors << 9) as u32;
 
                 let msgType = match op {
-                    libublk::sys::UBLK_IO_OP_READ => longhorn_rpc_protocal::MessageType::TypeRead as u32,
-                    libublk::sys::UBLK_IO_OP_WRITE => longhorn_rpc_protocal::MessageType::TypeWrite as u32,
+                    libublk::sys::UBLK_IO_OP_READ => {
+                        longhorn_rpc_protocal::MessageType::TypeRead as u32
+                    }
+                    libublk::sys::UBLK_IO_OP_WRITE => {
+                        longhorn_rpc_protocal::MessageType::TypeWrite as u32
+                    }
                     _ => panic!(),
                 };
-
 
                 let mut req_header = longhorn_rpc_protocal::MessageHeader {
                     MagicVersion: longhorn_rpc_protocal::MAGIC_VERSION,
@@ -316,14 +333,37 @@ fn q_a_fn(qid: u16, dev: &UblkDev, depth: u16) {
                     req_header.DataLength = bytes;
                 }
 
-                longhorn_rpc_protocal::write_header(&mut stream, &req_header, &mut request_header).unwrap();
-
-                if req_header.DataLength > 0{
-                    let buf_slice = unsafe { std::slice::from_raw_parts_mut(buf_addr, req_header.DataLength as usize) };
-                    stream.write_all(buf_slice).unwrap();
+                match longhorn_rpc_protocal::write_header(
+                    &mut stream,
+                    &req_header,
+                    &mut request_header,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("Error: {:?}", e);
+                        break;
+                    }
                 }
 
-                let mut res_header = longhorn_rpc_protocal::MessageHeader{
+                // print!("here 0\n");
+                // print!("res_header.Size: {}\n", req_header.Size);
+                // print!("res_header.DataLength: {}\n", req_header.DataLength);
+
+                if req_header.DataLength > 0 {
+                    let buf_slice = unsafe {
+                        std::slice::from_raw_parts_mut(buf_addr, req_header.DataLength as usize)
+                    };
+                    match stream.write_all(buf_slice) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Error: {:?}", e);
+                            break;
+                        }
+                    }
+                    // println!("Checksum: {}", compute_md5_checksum(buf_slice));
+                }
+
+                let mut res_header = longhorn_rpc_protocal::MessageHeader {
                     MagicVersion: 0,
                     Seq: 0,
                     Type: 0,
@@ -331,17 +371,41 @@ fn q_a_fn(qid: u16, dev: &UblkDev, depth: u16) {
                     Size: 0,
                     DataLength: 0,
                 };
-            
-                longhorn_rpc_protocal::read_header(&mut stream, &mut res_header, &mut response_header, message_header_size).unwrap();
-            
-                print!("here 1\n");
-                print!("res_header.DataLength: {}\n", res_header.DataLength);
-                if res_header.DataLength > 0 {
-                    let buf_slice = unsafe { std::slice::from_raw_parts_mut(buf_addr, req_header.DataLength as usize) };
-                    stream.read_exact(buf_slice).unwrap();
+
+                match longhorn_rpc_protocal::read_header(
+                    &mut stream,
+                    &mut res_header,
+                    &mut response_header,
+                    message_header_size,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("Error: {:?}", e);
+                        break;
+                    }
                 }
 
-                print!("here 2\n");
+                // print!("here 1\n");
+                // print!("res_header.DataLength: {}\n", res_header.DataLength);
+                if res_header.DataLength > 0 {
+                    let buf_slice = unsafe {
+                        std::slice::from_raw_parts_mut(buf_addr, res_header.DataLength as usize)
+                    };
+                    match stream.read_exact(buf_slice) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Error: {:?}", e);
+                            break;
+                        }
+                    }
+                    // print!("buf_slice.legnth: {}\n", buf_slice.len());
+                    // println!(
+                    //     "Checksum: {}",
+                    //     compute_md5_checksum(&buf_slice[..buf_slice.len()])
+                    // );
+                }
+
+                // print!("############\n");
 
                 // drop(stream);
 
@@ -354,7 +418,7 @@ fn q_a_fn(qid: u16, dev: &UblkDev, depth: u16) {
     // stream_rc.borrow_mut().write_all(b"Hello, world!").unwrap();
 
     // 2nd appoarch:
-    // spawn a new OS thread to continuously read from socket and dispatch the res 
+    // spawn a new OS thread to continuously read from socket and dispatch the res
 
     ublk_wait_and_handle_ios(&exe, &q_rc);
     smol::block_on(async { futures::future::join_all(f_vec).await });

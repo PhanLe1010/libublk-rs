@@ -1,8 +1,8 @@
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use std::io::{self, Read, Write};
+use std::mem;
 use std::os::unix::io::RawFd;
 use std::os::unix::net::UnixStream;
-use std::mem;
 
 pub const MAGIC_VERSION: u16 = 0x1b01;
 
@@ -18,7 +18,6 @@ pub struct MessageHeader {
     pub DataLength: u32,
 }
 
-
 pub fn get_message_header_size() -> usize {
     let total_size = mem::size_of::<u16>()   // MagicVersion
         + mem::size_of::<u32>()  // Seq
@@ -30,7 +29,7 @@ pub fn get_message_header_size() -> usize {
     total_size
 }
 
-#[repr(u32)]  // Ensure it uses a 32-bit unsigned integer as its underlying type
+#[repr(u32)] // Ensure it uses a 32-bit unsigned integer as its underlying type
 pub enum MessageType {
     TypeRead = 0,
     TypeWrite = 1,
@@ -42,7 +41,11 @@ pub enum MessageType {
     TypeUnmap = 7,
 }
 
-pub fn write_header_old(stream: &mut UnixStream, msg: &MessageHeader, header: &mut [u8]) -> io::Result<usize> {
+pub fn write_header_old(
+    stream: &mut UnixStream,
+    msg: &MessageHeader,
+    header: &mut [u8],
+) -> io::Result<usize> {
     let mut offset = 0;
 
     // Convert to little-endian and write into the header buffer
@@ -72,11 +75,15 @@ pub fn write_header_old(stream: &mut UnixStream, msg: &MessageHeader, header: &m
 
     // Write the header to the file descriptor
     let bytes_written = stream.write_all(&header[..offset])?;
-    
+
     Ok(offset)
 }
 
-pub fn write_header(stream: &mut UnixStream, msg: &MessageHeader, header: &mut [u8]) -> io::Result<usize> {
+pub fn write_header(
+    stream: &mut UnixStream,
+    msg: &MessageHeader,
+    header: &mut [u8],
+) -> io::Result<usize> {
     let mut offset = 0;
 
     // Use LittleEndian to directly write to the buffer
@@ -104,7 +111,12 @@ pub fn write_header(stream: &mut UnixStream, msg: &MessageHeader, header: &mut [
     Ok(offset)
 }
 
-pub fn read_header(stream: &mut UnixStream, msg: &mut MessageHeader, header: &mut [u8], header_size: usize) -> io::Result<usize> {
+pub fn read_header(
+    stream: &mut UnixStream,
+    msg: &mut MessageHeader,
+    header: &mut [u8],
+    header_size: usize,
+) -> io::Result<usize> {
     let mut offset = 0;
 
     // Read the full header from the socket connection
@@ -119,7 +131,10 @@ pub fn read_header(stream: &mut UnixStream, msg: &mut MessageHeader, header: &mu
             "Wrong magic version: 0x{:x}, expected 0x{:x}",
             msg.MagicVersion, MAGIC_VERSION
         );
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Wrong magic version"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Wrong magic version",
+        ));
     }
 
     // Parse Seq

@@ -1059,8 +1059,8 @@ impl UblkQueue<'_> {
         }
 
         let mut r = self.q_ring.borrow_mut();
-        // prepare another type io_uring command indicating that we are also waiting for the 
-        // longhorn socket connection to be abvaible for reading 
+        // prepare another type io_uring command indicating that we are also waiting for the
+        // longhorn socket connection to be abvaible for reading
         let ret: Result<usize, std::io::Error> = r.submitter().submit_with_args(to_wait, &args);
         match ret {
             Err(ref err) if err.raw_os_error() == Some(libc::ETIME) => {
